@@ -17,6 +17,13 @@ class KazennovaATestTaskOMP : public BaseTask {
   bool PreProcessingImpl() override;
   bool RunImpl() override;
   bool PostProcessingImpl() override;
+
+  int matrix_size;
+  int block_size;
+  int block_count;
+  std::vector<double> a_blocks;
+  std::vector<double> b_blocks;
+  std::vector<double> c_blocks;
 };
 
 }  // namespace kazennova_a_fox_algorithm
