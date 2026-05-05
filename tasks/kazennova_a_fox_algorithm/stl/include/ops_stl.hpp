@@ -11,7 +11,7 @@ class KazennovaATestTaskSTL : public BaseTask {
     return ppc::task::TypeOfTask::kSTL;
   }
 
-  explicit KazennovaATestTaskSTL(const InType& in);
+  explicit KazennovaATestTaskSTL(const InType &in);
 
  private:
   bool ValidationImpl() override;

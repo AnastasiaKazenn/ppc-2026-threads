@@ -10,22 +10,28 @@
 
 namespace kazennova_a_fox_algorithm {
 
-KazennovaATestTaskSTL::KazennovaATestTaskSTL(const InType& in) {
+KazennovaATestTaskSTL::KazennovaATestTaskSTL(const InType &in) {
   SetTypeOfTask(GetStaticTypeOfTask());
   GetInput() = in;
 }
 
 bool KazennovaATestTaskSTL::ValidationImpl() {
-  const auto& in = GetInput();
-  if (in.A.data.empty() || in.B.data.empty()) return false;
-  if (in.A.rows <= 0 || in.A.cols <= 0 || in.B.rows <= 0 || in.B.cols <= 0) return false;
-  if (in.A.cols != in.B.rows) return false;
+  const auto &in = GetInput();
+  if (in.A.data.empty() || in.B.data.empty()) {
+    return false;
+  }
+  if (in.A.rows <= 0 || in.A.cols <= 0 || in.B.rows <= 0 || in.B.cols <= 0) {
+    return false;
+  }
+  if (in.A.cols != in.B.rows) {
+    return false;
+  }
   return true;
 }
 
 bool KazennovaATestTaskSTL::PreProcessingImpl() {
-  const auto& in = GetInput();
-  auto& out = GetOutput();
+  const auto &in = GetInput();
+  auto &out = GetOutput();
   out.rows = in.A.rows;
   out.cols = in.B.cols;
   out.data.assign(static_cast<size_t>(out.rows) * out.cols, 0.0);
@@ -33,15 +39,15 @@ bool KazennovaATestTaskSTL::PreProcessingImpl() {
 }
 
 bool KazennovaATestTaskSTL::RunImpl() {
-  const auto& in = GetInput();
-  auto& out = GetOutput();
+  const auto &in = GetInput();
+  auto &out = GetOutput();
 
   const int M = in.A.rows;
   const int K = in.A.cols;
   const int N = in.B.cols;
-  const auto& a = in.A.data;
-  const auto& b = in.B.data;
-  auto& c = out.data;
+  const auto &a = in.A.data;
+  const auto &b = in.B.data;
+  auto &c = out.data;
 
   const int BS = BLOCK_SIZE;
 
@@ -49,8 +55,8 @@ bool KazennovaATestTaskSTL::RunImpl() {
   const int blocks_j = (N + BS - 1) / BS;
   const int blocks_k = (K + BS - 1) / BS;
 
-  auto get_block = [BS](const std::vector<double>& mat, int rows, int cols, int block_row, int block_col,
-                        double* block_buf) {
+  auto get_block = [BS](const std::vector<double> &mat, int rows, int cols, int block_row, int block_col,
+                        double *block_buf) {
     int start_row = block_row * BS;
     int start_col = block_col * BS;
     int end_row = std::min(start_row + BS, rows);
@@ -69,8 +75,12 @@ bool KazennovaATestTaskSTL::RunImpl() {
   };
 
   int num_threads = ppc::util::GetNumThreads();
-  if (num_threads <= 0) num_threads = std::thread::hardware_concurrency();
-  if (num_threads <= 0) num_threads = 2;
+  if (num_threads <= 0) {
+    num_threads = std::thread::hardware_concurrency();
+  }
+  if (num_threads <= 0) {
+    num_threads = 2;
+  }
 
   std::vector<std::thread> threads;
   threads.reserve(num_threads);
@@ -84,7 +94,9 @@ bool KazennovaATestTaskSTL::RunImpl() {
 
     while (true) {
       size_t idx = next_block_idx.fetch_add(1);
-      if (idx >= total_blocks) break;
+      if (idx >= total_blocks) {
+        break;
+      }
 
       int bi = static_cast<int>(idx / blocks_j);
       int bj = static_cast<int>(idx % blocks_j);
@@ -113,7 +125,7 @@ bool KazennovaATestTaskSTL::RunImpl() {
   for (int t = 0; t < num_threads; ++t) {
     threads.emplace_back(worker);
   }
-  for (auto& thr : threads) {
+  for (auto &thr : threads) {
     thr.join();
   }
 
