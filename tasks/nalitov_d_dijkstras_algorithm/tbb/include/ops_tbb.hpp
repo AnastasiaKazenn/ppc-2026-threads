@@ -8,12 +8,12 @@
 
 namespace nalitov_d_dijkstras_algorithm {
 
-class NalitovDDijkstrasAlgorithmSeq : public BaseTask {
+class NalitovDDijkstrasAlgorithmTBB : public BaseTask {
  public:
   static constexpr ppc::task::TypeOfTask GetStaticTypeOfTask() {
-    return ppc::task::TypeOfTask::kSEQ;
+    return ppc::task::TypeOfTask::kTBB;
   }
-  explicit NalitovDDijkstrasAlgorithmSeq(const InType &in);
+  explicit NalitovDDijkstrasAlgorithmTBB(const InType &in);
 
  private:
   bool ValidationImpl() override;
