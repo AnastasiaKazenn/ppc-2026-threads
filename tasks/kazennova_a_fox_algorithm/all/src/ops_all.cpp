@@ -42,7 +42,7 @@ void MultiplyBlock(const std::vector<double> &block_a, const std::vector<double>
       for (int kk = 0; kk < max_k; ++kk) {
         sum += block_a[(i * block_size) + kk] * block_b[(kk * block_size) + j];
       }
-      local_c[local_row * n + (bj * block_size + j)] += sum;
+      local_c[(local_row * n) + ((bj * block_size) + j)] += sum;
     }
   }
 }
@@ -97,7 +97,7 @@ bool KazennovaATestTaskALL::RunImpl() {
 
   const int rows_per_proc = rows_total / world_size;
   const int remainder = rows_total % world_size;
-  const int start_row = rank * rows_per_proc + std::min(rank, remainder);
+  const int start_row = (rank * rows_per_proc) + std::min(rank, remainder);
   const int local_rows = rows_per_proc + (rank < remainder ? 1 : 0);
 
   if (local_rows == 0) {
@@ -163,23 +163,23 @@ bool KazennovaATestTaskALL::RunImpl() {
   std::vector<int> recv_counts(world_size, 0);
   std::vector<int> displs(world_size, 0);
   int total_elements = 0;
-  for (int r = 0; r < world_size; ++r) {
-    const int r_local_rows = rows_per_proc + (r < remainder ? 1 : 0);
-    recv_counts[r] = r_local_rows * cols_b;
-    displs[r] = total_elements;
-    total_elements += recv_counts[r];
+  for (int proc = 0; proc < world_size; ++proc) {
+    const int proc_local_rows = rows_per_proc + (proc < remainder ? 1 : 0);
+    recv_counts[proc] = proc_local_rows * cols_b;
+    displs[proc] = total_elements;
+    total_elements += recv_counts[proc];
   }
 
   if (rank == 0) {
     std::vector<double> gathered(static_cast<size_t>(total_elements));
     MPI_Gatherv(local_c.data(), static_cast<int>(local_c.size()), MPI_DOUBLE, gathered.data(), recv_counts.data(),
                 displs.data(), MPI_DOUBLE, 0, MPI_COMM_WORLD);
-    for (int r = 0; r < world_size; ++r) {
-      const int r_start_row = r * rows_per_proc + std::min(r, remainder);
-      const int r_local_rows = rows_per_proc + (r < remainder ? 1 : 0);
-      for (int i = 0; i < r_local_rows; ++i) {
+    for (int proc = 0; proc < world_size; ++proc) {
+      const int proc_start_row = (proc * rows_per_proc) + std::min(proc, remainder);
+      const int proc_local_rows = rows_per_proc + (proc < remainder ? 1 : 0);
+      for (int i = 0; i < proc_local_rows; ++i) {
         for (int j = 0; j < cols_b; ++j) {
-          c[(r_start_row + i) * cols_b + j] = gathered[displs[r] + i * cols_b + j];
+          c[((proc_start_row + i) * cols_b) + j] = gathered[displs[proc] + (i * cols_b) + j];
         }
       }
     }
