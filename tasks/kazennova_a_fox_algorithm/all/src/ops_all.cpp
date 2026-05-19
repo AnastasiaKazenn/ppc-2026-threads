@@ -3,7 +3,9 @@
 #include <mpi.h>
 
 #include <algorithm>
+#include <atomic>
 #include <cstddef>
+#include <thread>
 #include <vector>
 
 #include "kazennova_a_fox_algorithm/common/include/common.hpp"
@@ -24,10 +26,23 @@ void GetBlock(const std::vector<double> &mat, int rows, int cols, int block_row,
       block_buf[(i * block_size) + j] = 0.0;
     }
   }
-
   for (int i = start_row; i < end_row; ++i) {
     for (int j = start_col; j < end_col; ++j) {
       block_buf[((i - start_row) * block_size) + (j - start_col)] = mat[(i * cols) + j];
+    }
+  }
+}
+
+void MultiplyBlock(const std::vector<double> &block_a, const std::vector<double> &block_b, int block_size, int max_i,
+                   int max_j, int max_k, int bi, int bj, int n, std::vector<double> &local_c) {
+  for (int i = 0; i < max_i; ++i) {
+    const int local_row = (bi * block_size) + i;
+    for (int j = 0; j < max_j; ++j) {
+      double sum = 0.0;
+      for (int kk = 0; kk < max_k; ++kk) {
+        sum += block_a[(i * block_size) + kk] * block_b[(kk * block_size) + j];
+      }
+      local_c[local_row * n + (bj * block_size + j)] += sum;
     }
   }
 }
@@ -63,24 +78,25 @@ bool KazennovaATestTaskALL::PreProcessingImpl() {
 }
 
 bool KazennovaATestTaskALL::RunImpl() {
-  int rank = -1, world_size = 1;
+  int rank = -1;
+  int world_size = 1;
   MPI_Comm_rank(MPI_COMM_WORLD, &rank);
   MPI_Comm_size(MPI_COMM_WORLD, &world_size);
 
   const auto &in = GetInput();
   auto &out = GetOutput();
 
-  const int m = in.A.rows;
-  const int k = in.A.cols;
-  const int n = in.B.cols;
+  const int rows_total = in.A.rows;
+  const int cols_a = in.A.cols;
+  const int cols_b = in.B.cols;
   const auto &a = in.A.data;
   const auto &b = in.B.data;
   auto &c = out.data;
 
-  const int bs = kBlockSize;
+  const int block_size = kBlockSize;
 
-  const int rows_per_proc = m / world_size;
-  const int remainder = m % world_size;
+  const int rows_per_proc = rows_total / world_size;
+  const int remainder = rows_total % world_size;
   const int start_row = rank * rows_per_proc + std::min(rank, remainder);
   const int local_rows = rows_per_proc + (rank < remainder ? 1 : 0);
 
@@ -88,44 +104,60 @@ bool KazennovaATestTaskALL::RunImpl() {
     if (rank == 0) {
       return true;
     }
+    MPI_Barrier(MPI_COMM_WORLD);
     return true;
   }
 
-  std::vector<double> local_c(static_cast<size_t>(local_rows) * n, 0.0);
+  std::vector<double> local_c(static_cast<size_t>(local_rows) * cols_b, 0.0);
 
-  const int blocks_i_local = (local_rows + bs - 1) / bs;
-  const int blocks_j = (n + bs - 1) / bs;
-  const int blocks_k = (k + bs - 1) / bs;
+  const int blocks_i_local = (local_rows + block_size - 1) / block_size;
+  const int blocks_j = (cols_b + block_size - 1) / block_size;
+  const int blocks_k = (cols_a + block_size - 1) / block_size;
 
-#pragma omp parallel for collapse(2) default(none) \
-    shared(a, b, local_c, blocks_i_local, blocks_j, blocks_k, local_rows, n, bs, start_row, k, m)
-  for (int bi = 0; bi < blocks_i_local; ++bi) {
-    for (int bj = 0; bj < blocks_j; ++bj) {
-      std::vector<double> block_a(static_cast<size_t>(bs) * bs);
-      std::vector<double> block_b(static_cast<size_t>(bs) * bs);
+  int num_threads = static_cast<int>(std::thread::hardware_concurrency());
+  if (num_threads <= 0) {
+    num_threads = 2;
+  }
+
+  std::vector<std::thread> threads;
+  threads.reserve(static_cast<size_t>(num_threads));
+
+  std::atomic<size_t> next_block_idx(0);
+  const size_t total_blocks = static_cast<size_t>(blocks_i_local) * blocks_j;
+
+  auto worker = [&]() {
+    std::vector<double> block_a(static_cast<size_t>(block_size) * block_size);
+    std::vector<double> block_b(static_cast<size_t>(block_size) * block_size);
+
+    while (true) {
+      const size_t idx = next_block_idx.fetch_add(1);
+      if (idx >= total_blocks) {
+        break;
+      }
+
+      const int bi = static_cast<int>(idx / blocks_j);
+      const int bj = static_cast<int>(idx % blocks_j);
 
       for (int bk = 0; bk < blocks_k; ++bk) {
-        const int bi_global = (start_row / bs) + bi;
-        GetBlock(a, m, k, bi_global, bk, bs, block_a.data());
-        GetBlock(b, k, n, bk, bj, bs, block_b.data());
+        const int bi_global = (start_row / block_size) + bi;
+        GetBlock(a, rows_total, cols_a, bi_global, bk, block_size, block_a.data());
+        GetBlock(b, cols_a, cols_b, bk, bj, block_size, block_b.data());
 
-        const int offset = start_row % bs;
-        const int max_i = std::min(bs, local_rows - (bi * bs) - offset);
-        const int max_j = std::min(bs, n - (bj * bs));
-        const int max_k = std::min(bs, k - (bk * bs));
+        const int offset = start_row % block_size;
+        const int max_i = std::min(block_size, local_rows - (bi * block_size) - offset);
+        const int max_j = std::min(block_size, cols_b - (bj * block_size));
+        const int max_k = std::min(block_size, cols_a - (bk * block_size));
 
-        for (int i = 0; i < max_i; ++i) {
-          const int local_row = (bi * bs) + i;
-          for (int j = 0; j < max_j; ++j) {
-            double sum = 0.0;
-            for (int kk = 0; kk < max_k; ++kk) {
-              sum += block_a[(i + offset) * bs + kk] * block_b[kk * bs + j];
-            }
-            local_c[local_row * n + (bj * bs + j)] += sum;
-          }
-        }
+        MultiplyBlock(block_a, block_b, block_size, max_i, max_j, max_k, bi, bj, cols_b, local_c);
       }
     }
+  };
+
+  for (int thread_idx = 0; thread_idx < num_threads; ++thread_idx) {
+    threads.emplace_back(worker);
+  }
+  for (auto &thr : threads) {
+    thr.join();
   }
 
   std::vector<int> recv_counts(world_size, 0);
@@ -133,7 +165,7 @@ bool KazennovaATestTaskALL::RunImpl() {
   int total_elements = 0;
   for (int r = 0; r < world_size; ++r) {
     const int r_local_rows = rows_per_proc + (r < remainder ? 1 : 0);
-    recv_counts[r] = r_local_rows * n;
+    recv_counts[r] = r_local_rows * cols_b;
     displs[r] = total_elements;
     total_elements += recv_counts[r];
   }
@@ -142,13 +174,12 @@ bool KazennovaATestTaskALL::RunImpl() {
     std::vector<double> gathered(static_cast<size_t>(total_elements));
     MPI_Gatherv(local_c.data(), static_cast<int>(local_c.size()), MPI_DOUBLE, gathered.data(), recv_counts.data(),
                 displs.data(), MPI_DOUBLE, 0, MPI_COMM_WORLD);
-
     for (int r = 0; r < world_size; ++r) {
       const int r_start_row = r * rows_per_proc + std::min(r, remainder);
       const int r_local_rows = rows_per_proc + (r < remainder ? 1 : 0);
       for (int i = 0; i < r_local_rows; ++i) {
-        for (int j = 0; j < n; ++j) {
-          c[(r_start_row + i) * n + j] = gathered[displs[r] + i * n + j];
+        for (int j = 0; j < cols_b; ++j) {
+          c[(r_start_row + i) * cols_b + j] = gathered[displs[r] + i * cols_b + j];
         }
       }
     }
