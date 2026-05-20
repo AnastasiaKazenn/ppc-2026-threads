@@ -47,6 +47,59 @@ void MultiplyBlock(const std::vector<double> &block_a, const std::vector<double>
   }
 }
 
+void RunLocalMultiplication(const std::vector<double> &a, const std::vector<double> &b, int rows_total, int cols_a,
+                            int cols_b, int start_row, int local_rows, int block_size, std::vector<double> &local_c) {
+  const int blocks_i_local = (local_rows + block_size - 1) / block_size;
+  const int blocks_j = (cols_b + block_size - 1) / block_size;
+  const int blocks_k = (cols_a + block_size - 1) / block_size;
+
+  int num_threads = static_cast<int>(std::thread::hardware_concurrency());
+  if (num_threads <= 0) {
+    num_threads = 2;
+  }
+
+  std::vector<std::thread> threads;
+  threads.reserve(static_cast<size_t>(num_threads));
+
+  std::atomic<size_t> next_block_idx(0);
+  const size_t total_blocks = static_cast<size_t>(blocks_i_local) * blocks_j;
+
+  auto worker = [&]() {
+    std::vector<double> block_a(static_cast<size_t>(block_size) * block_size);
+    std::vector<double> block_b(static_cast<size_t>(block_size) * block_size);
+
+    while (true) {
+      const size_t idx = next_block_idx.fetch_add(1);
+      if (idx >= total_blocks) {
+        break;
+      }
+
+      const int bi = static_cast<int>(idx / blocks_j);
+      const int bj = static_cast<int>(idx % blocks_j);
+
+      for (int bk = 0; bk < blocks_k; ++bk) {
+        const int bi_global = (start_row / block_size) + bi;
+        GetBlock(a, rows_total, cols_a, bi_global, bk, block_size, block_a.data());
+        GetBlock(b, cols_a, cols_b, bk, bj, block_size, block_b.data());
+
+        const int offset = start_row % block_size;
+        const int max_i = std::min(block_size, local_rows - (bi * block_size) - offset);
+        const int max_j = std::min(block_size, cols_b - (bj * block_size));
+        const int max_k = std::min(block_size, cols_a - (bk * block_size));
+
+        MultiplyBlock(block_a, block_b, block_size, max_i, max_j, max_k, bi, bj, cols_b, local_c);
+      }
+    }
+  };
+
+  for (int thread_idx = 0; thread_idx < num_threads; ++thread_idx) {
+    threads.emplace_back(worker);
+  }
+  for (auto &thr : threads) {
+    thr.join();
+  }
+}
+
 }  // namespace
 
 KazennovaATestTaskALL::KazennovaATestTaskALL(const InType &in) {
@@ -110,55 +163,7 @@ bool KazennovaATestTaskALL::RunImpl() {
 
   std::vector<double> local_c(static_cast<size_t>(local_rows) * cols_b, 0.0);
 
-  const int blocks_i_local = (local_rows + block_size - 1) / block_size;
-  const int blocks_j = (cols_b + block_size - 1) / block_size;
-  const int blocks_k = (cols_a + block_size - 1) / block_size;
-
-  int num_threads = static_cast<int>(std::thread::hardware_concurrency());
-  if (num_threads <= 0) {
-    num_threads = 2;
-  }
-
-  std::vector<std::thread> threads;
-  threads.reserve(static_cast<size_t>(num_threads));
-
-  std::atomic<size_t> next_block_idx(0);
-  const size_t total_blocks = static_cast<size_t>(blocks_i_local) * blocks_j;
-
-  auto worker = [&]() {
-    std::vector<double> block_a(static_cast<size_t>(block_size) * block_size);
-    std::vector<double> block_b(static_cast<size_t>(block_size) * block_size);
-
-    while (true) {
-      const size_t idx = next_block_idx.fetch_add(1);
-      if (idx >= total_blocks) {
-        break;
-      }
-
-      const int bi = static_cast<int>(idx / blocks_j);
-      const int bj = static_cast<int>(idx % blocks_j);
-
-      for (int bk = 0; bk < blocks_k; ++bk) {
-        const int bi_global = (start_row / block_size) + bi;
-        GetBlock(a, rows_total, cols_a, bi_global, bk, block_size, block_a.data());
-        GetBlock(b, cols_a, cols_b, bk, bj, block_size, block_b.data());
-
-        const int offset = start_row % block_size;
-        const int max_i = std::min(block_size, local_rows - (bi * block_size) - offset);
-        const int max_j = std::min(block_size, cols_b - (bj * block_size));
-        const int max_k = std::min(block_size, cols_a - (bk * block_size));
-
-        MultiplyBlock(block_a, block_b, block_size, max_i, max_j, max_k, bi, bj, cols_b, local_c);
-      }
-    }
-  };
-
-  for (int thread_idx = 0; thread_idx < num_threads; ++thread_idx) {
-    threads.emplace_back(worker);
-  }
-  for (auto &thr : threads) {
-    thr.join();
-  }
+  RunLocalMultiplication(a, b, rows_total, cols_a, cols_b, start_row, local_rows, block_size, local_c);
 
   std::vector<int> recv_counts(world_size, 0);
   std::vector<int> displs(world_size, 0);
